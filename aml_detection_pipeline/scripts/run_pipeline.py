@@ -99,11 +99,8 @@ def main():
     run_rule_based_scorer(
         input_path=input_path,
         output_path=rule_scores_path,
-        cluster_risk_boost=rb["cluster_risk_boost"],
-        cluster_secondary=rb["cluster_secondary"],
         category_weights=rb["category_weights"],
-        cluster_boost_amount=rb["cluster_boost_amount"],
-        cluster_secondary_boost_amount=rb["cluster_secondary_boost_amount"],
+        cluster_boost=rb.get("cluster_boost") or {},
     )
     print(f"  Wrote {rule_scores_path}")
 

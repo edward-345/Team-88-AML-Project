@@ -2,7 +2,7 @@
 Cluster-informed rule-based risk scorer for AML detection (pipeline v2).
 
 Reads master_features_with_clustering.csv, applies 5-category red-flag rules
-plus cluster boost (string cluster labels). Outputs rule_based_scores.csv with
+plus per-cluster uplift from a cluster label → amount map. Outputs rule_based_scores.csv with
 customer_id, rule_based_score (0-1), category breakdown, cluster, cluster_risk.
 
 Does not import config; receives input_path, output_path, and rule_based config from the runner.
@@ -112,27 +112,24 @@ def calculate_category_score(features_df, feature_config, category_weight):
     return category_score * category_weight
 
 
-def apply_cluster_boost(
-    risk_scores,
-    cluster_series,
-    cluster_risk_boost,
-    cluster_secondary,
-    boost_amount,
-    secondary_boost_amount,
-):
+def apply_cluster_boost(risk_scores, cluster_series, cluster_boost):
+    """
+    cluster_boost: dict mapping cluster label (str) -> uplift amount.
+    Unknown or empty labels get 0.
+    """
     cluster_risk = pd.Series(0.0, index=risk_scores.index, dtype=float)
-    boost_set = set(cluster_risk_boost) if cluster_risk_boost else set()
-    secondary_set = set(cluster_secondary) if cluster_secondary else set()
+    if not cluster_boost:
+        adjusted = (risk_scores + cluster_risk).clip(0.0, 1.0)
+        return adjusted, cluster_risk
+    boost_map = {str(k).strip(): float(v) for k, v in cluster_boost.items()}
     cluster_clean = cluster_series.dropna()
     for idx in cluster_clean.index:
         c = cluster_clean.loc[idx]
         c_str = str(c).strip() if pd.notna(c) else ""
         if not c_str:
             continue
-        if c_str in boost_set:
-            cluster_risk.loc[idx] = boost_amount
-        elif c_str in secondary_set:
-            cluster_risk.loc[idx] = secondary_boost_amount
+        if c_str in boost_map:
+            cluster_risk.loc[idx] = boost_map[c_str]
     adjusted = (risk_scores + cluster_risk).clip(0.0, 1.0)
     return adjusted, cluster_risk
 
@@ -177,15 +174,13 @@ def calculate_rule_based_risk(features_df, category_weights):
 def run(
     input_path,
     output_path,
-    cluster_risk_boost,
-    cluster_secondary,
     category_weights,
-    cluster_boost_amount,
-    cluster_secondary_boost_amount,
+    cluster_boost=None,
 ):
     """
     Run the rule-based scorer.
     input_path: Path to master_features_with_clustering.csv.
+    cluster_boost: optional dict cluster label -> uplift (default none applied).
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -197,9 +192,7 @@ def run(
     risk_scores, risk_details = calculate_rule_based_risk(df, category_weights)
     cluster_series = df["cluster"] if "cluster" in df.columns else pd.Series(index=df.index, dtype=float)
     risk_scores, cluster_risk_series = apply_cluster_boost(
-        risk_scores, cluster_series,
-        cluster_risk_boost, cluster_secondary,
-        cluster_boost_amount, cluster_secondary_boost_amount,
+        risk_scores, cluster_series, cluster_boost if cluster_boost is not None else {},
     )
     out = df[["customer_id"]].copy()
     out["rule_based_score"] = risk_scores.values

@@ -122,7 +122,7 @@ The detection pipeline runs from a single input file, computes a rule-based risk
 | Geographic | `rule_based.category_weights.geographic` | 0.20 | Cross-border, high-risk jurisdictions, dispersion. |
 | Behavioral | `rule_based.category_weights.behavioral` | 0.20 | Unusual turnover, flow-through, lifestyle mismatch. |
 | Profile | `rule_based.category_weights.profile` | 0.10 | MSB, cash-intensive business, new account, etc. |
-| Cluster | `rule_based.cluster_risk_boost` / `cluster_secondary` | 0.15 / 0.05 | Extra weight for high-risk or secondary clusters (e.g. `individual_3`, `business_2`). |
+| Cluster | `rule_based.cluster_boost` | (per cluster) | Map of cluster label → uplift added to the rule score (e.g. `individual_3: 0.15`). Unlisted clusters get 0. |
 
 The scorer computes a 0–1 score per category from binary/flag features and weights, then sums them (including cluster boosts) into a single **rule_based_score** per customer. Output columns include `customer_id`, `structuring_risk`, `channel_risk`, `geographic_risk`, `behavioral_risk`, `profile_risk`, `cluster_risk`, and `rule_based_score`.
 
