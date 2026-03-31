@@ -20,8 +20,8 @@ paths:
 
 # --- Rule-based scorer ---
 rule_based:
-  cluster_risk_boost: ["individual_3", "individual_8", "business_2", "business_5"]
-  cluster_secondary: ["individual_1", "individual_5", "business_4"]
+  cluster_risk_boost: ["individual_3", "individual_4", "individual_6", "business_3", "business_4", "business_6"]
+  cluster_secondary: ["individual_1", "individual_5", "business_1", "business_2"]
   category_weights:
     structuring_amount: 0.25
     channel: 0.25
