@@ -1,0 +1,477 @@
+---
+title: "Selective Inference for K-means Clustering on Version A AML Segments"
+author: "Junyi Hou"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+## Section 1: Background and Objective
+
+You can paste this directly as markdown text in the Rmd:
+
+# 1. Background and Objective
+
+This document implements selective inference for k-means clustering on the Version A AML customer segmentation pipeline.
+
+Our existing pipeline applies FAMD to mixed-type customer features and then uses k-means clustering to identify behavioral customer segments. These clusters are later used for interpretation, within-cluster anomaly detection, and downstream risk scoring.
+
+However, classical post-clustering comparisons are biased because the same data are used both to create the clusters and to test whether the clusters differ. The KmeansInference package addresses this problem by providing selective p-values for testing whether two estimated k-means clusters have different mean vectors, while accounting for the clustering step itself. :contentReference[oaicite:1]{index=1} :contentReference[oaicite:2]{index=2}
+
+The main goal of this analysis is:
+
+1. to determine whether selected k-means clusters are statistically distinguishable after selection correction;
+2. to assess whether the current choice of k may be over-segmenting the data;
+3. to identify which clusters are reliable enough to support downstream AML interpretation and within-cluster LOF analysis.
+
+This file focuses on Version A clustering only:
+- Business customers
+- Individual customers
+
+The selective inference will be performed on the FAMD output matrix, because this is the feature space used for k-means clustering.
+
+```{r, include=FALSE}
+library(tidyverse)
+library(KmeansInference)
+library(knitr)
+library(kableExtra)
+# Please use the following code to download the KmeansInference Package
+# require("devtools")
+# devtools::install_github("yiqunchen/KmeansInference")
+# library(KmeansInference)
+```
+
+```{r}
+business_after_path  <- "VersionA_Business_AfterFAMD.csv"
+business_before_path <- "VersionA_Business_BeforeFAMD.csv"
+
+individual_after_path  <- "VersionA_Individual_AfterFAMD.csv"
+individual_before_path <- "VersionA_Individual_BeforeFAMD.csv"
+
+business_after  <- read.csv(business_after_path, check.names = FALSE)
+business_before <- read.csv(business_before_path, check.names = FALSE)
+
+individual_after  <- read.csv(individual_after_path, check.names = FALSE)
+individual_before <- read.csv(individual_before_path, check.names = FALSE)
+```
+
+```{r}
+# ---- Basic dimensions ----
+cat("Business AfterFAMD dimensions: ", dim(business_after), "\n")
+cat("Business BeforeFAMD dimensions:", dim(business_before), "\n\n")
+
+cat("Individual AfterFAMD dimensions: ", dim(individual_after), "\n")
+cat("Individual BeforeFAMD dimensions:", dim(individual_before), "\n")
+```
+```{r}
+# ---- Preview columns ----
+cat("Business AfterFAMD column names:\n")
+print(colnames(business_after))
+
+cat("\nBusiness BeforeFAMD first 15 columns:\n")
+print(colnames(business_before)[1:min(15, ncol(business_before))])
+
+cat("\nIndividual AfterFAMD column names:\n")
+print(colnames(individual_after))
+
+cat("\nIndividual BeforeFAMD first 15 columns:\n")
+print(colnames(individual_before)[1:min(15, ncol(individual_before))])
+```
+```{r}
+# ---- Convert AfterFAMD data to numeric matrices ----
+# These are the matrices to be used for k-means and selective inference.
+
+X_business <- business_after %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.matrix()
+
+X_individual <- individual_after %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.matrix()
+
+# Rename columns for readability
+colnames(X_business) <- paste0("FAMD_", seq_len(ncol(X_business)))
+colnames(X_individual) <- paste0("FAMD_", seq_len(ncol(X_individual)))
+
+# ---- Validate FAMD matrices ----
+cat("Business matrix mode: ", mode(X_business), "\n")
+cat("Business matrix dimensions: ", dim(X_business), "\n")
+cat("Any missing values in business matrix? ", anyNA(X_business), "\n\n")
+
+cat("Individual matrix mode: ", mode(X_individual), "\n")
+cat("Individual matrix dimensions: ", dim(X_individual), "\n")
+cat("Any missing values in individual matrix? ", anyNA(X_individual), "\n")
+
+```
+```{r}
+# ---- Summary table for imported data ----
+data_summary <- tibble(
+  dataset = c("Business BeforeFAMD", "Business AfterFAMD",
+              "Individual BeforeFAMD", "Individual AfterFAMD"),
+  n_rows = c(nrow(business_before), nrow(business_after),
+             nrow(individual_before), nrow(individual_after)),
+  n_cols = c(ncol(business_before), ncol(business_after),
+             ncol(individual_before), ncol(individual_after))
+)
+
+kable(data_summary, caption = "Imported datasets and dimensions") %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r}
+# ---- Summary statistics of FAMD components ----
+business_famd_summary <- as.data.frame(X_business) %>%
+  summarise(across(everything(),
+                   list(mean = mean, sd = sd, min = min, max = max),
+                   .names = "{.col}_{.fn}"))
+
+individual_famd_summary <- as.data.frame(X_individual) %>%
+  summarise(across(everything(),
+                   list(mean = mean, sd = sd, min = min, max = max),
+                   .names = "{.col}_{.fn}"))
+
+cat("Business FAMD component summary:\n")
+print(business_famd_summary)
+
+cat("\nIndividual FAMD component summary:\n")
+print(individual_famd_summary)
+```
+
+```{r}
+# ---- Analysis-ready objects ----
+# Keep customer IDs for interpretation later, but do not include them in X.
+business_ids <- business_before$customer_id
+individual_ids <- individual_before$customer_id
+
+# Optional metadata
+business_meta <- business_before %>%
+  select(customer_id, province, industry_code)
+
+individual_meta <- individual_before %>%
+  select(customer_id, province, occupation_code)
+
+cat("Analysis-ready business matrix created: X_business\n")
+cat("Analysis-ready individual matrix created: X_individual\n")
+```
+The imported files confirm that the selective-inference analysis should be conducted on the `AfterFAMD` datasets rather than the raw pre-FAMD inputs. The business segment contains 8,311 observations represented by 8 FAMD components, and the individual segment contains 53,099 observations represented by 6 FAMD components. The `BeforeFAMD` files will be retained only for customer identifiers and later interpretation, but not used directly in the selective inference calculations.
+
+```{r}
+# Step 3:
+# 3. Package-owned k-means clustering with fixed seed
+
+k_business <- 5
+k_individual <- 5
+iter_max_value <- 30
+
+fixed_seed <- 1234
+
+cat("Using fixed seed:", fixed_seed, "\n")
+```
+
+```{r}
+# 3.1 Run kmeans_estimation ONCE
+
+business_est <- kmeans_estimation(
+  X = X_business,
+  k = k_business,
+  iter.max = iter_max_value,
+  seed = fixed_seed
+)
+
+individual_est <- kmeans_estimation(
+  X = X_individual,
+  k = k_individual,
+  iter.max = iter_max_value,
+  seed = fixed_seed
+)
+
+cat("kmeans_estimation completed.\n")
+```
+
+```{r}
+# 3.3 Extract final clusters from kmeans_estimation
+
+cluster_business <- business_est$cluster[[business_est$iter]]
+cluster_individual <- individual_est$cluster[[individual_est$iter]]
+
+cluster_business_raw <- paste0("business_", cluster_business)
+cluster_individual_raw <- paste0("individual_", cluster_individual)
+
+cat("Business clusters from kmeans_estimation:\n")
+print(table(cluster_business))
+
+cat("\nIndividual clusters from kmeans_estimation:\n")
+print(table(cluster_individual))
+
+```
+
+```{r}
+# 3.4 Cluster size summaries
+
+business_cluster_sizes <- data.frame(
+  cluster_num = sort(unique(cluster_business))
+) %>%
+  dplyr::mutate(
+    cluster_name = paste0("business_", cluster_num),
+    n = as.integer(table(cluster_business)[as.character(cluster_num)])
+  ) %>%
+  dplyr::arrange(cluster_num)
+
+individual_cluster_sizes <- data.frame(
+  cluster_num = sort(unique(cluster_individual))
+) %>%
+  dplyr::mutate(
+    cluster_name = paste0("individual_", cluster_num),
+    n = as.integer(table(cluster_individual)[as.character(cluster_num)])
+  ) %>%
+  dplyr::arrange(cluster_num)
+
+print(business_cluster_sizes)
+print(individual_cluster_sizes)
+
+```
+
+```{r}
+# 3.5 Analysis-ready data frames
+
+business_analysis_df <- data.frame(
+  customer_id = business_ids,
+  cluster_raw = cluster_business_raw,
+  cluster_num = cluster_business,
+  X_business,
+  check.names = FALSE
+)
+
+individual_analysis_df <- data.frame(
+  customer_id = individual_ids,
+  cluster_raw = cluster_individual_raw,
+  cluster_num = cluster_individual,
+  X_individual,
+  check.names = FALSE
+)
+```
+
+```{r}
+# 3.6 Compute centroids from package-owned clustering
+
+compute_centroids <- function(X, clusters) {
+  clusts <- sort(unique(clusters))
+  out <- sapply(clusts, function(k) {
+    colMeans(X[clusters == k, , drop = FALSE])
+  })
+  out <- t(out)
+  rownames(out) <- clusts
+  out
+}
+
+centroids_business <- compute_centroids(X_business, cluster_business)
+centroids_individual <- compute_centroids(X_individual, cluster_individual)
+```
+
+```{r}
+# 3.7 Compute pairwise centroid distances and choose closest pairs
+
+dist_business <- as.matrix(dist(centroids_business))
+dist_individual <- as.matrix(dist(centroids_individual))
+
+get_distance_table <- function(dist_matrix, prefix) {
+  df <- as.data.frame(as.table(dist_matrix), stringsAsFactors = FALSE)
+  colnames(df) <- c("cluster_a", "cluster_b", "distance")
+  
+  df <- df %>%
+    dplyr::mutate(
+      cluster_a = as.integer(as.character(cluster_a)),
+      cluster_b = as.integer(as.character(cluster_b))
+    ) %>%
+    dplyr::filter(cluster_a < cluster_b) %>%
+    dplyr::mutate(
+      cluster_a_name = paste0(prefix, "_", cluster_a),
+      cluster_b_name = paste0(prefix, "_", cluster_b)
+    ) %>%
+    dplyr::arrange(distance)
+  
+  df
+}
+
+dist_table_business <- get_distance_table(dist_business, "business")
+dist_table_individual <- get_distance_table(dist_individual, "individual")
+
+n_pairs_business <- 15
+n_pairs_individual <- 15
+pairs_business <- head(dist_table_business, n_pairs_business)
+pairs_individual <- head(dist_table_individual, n_pairs_individual)
+
+print(pairs_business)
+print(pairs_individual)
+```
+
+```{r}
+# 4. Selective inference using package-owned clustering
+
+# 4.1 Robust sigma estimator
+estimate_MED <- function(X) {
+  X_centered <- X
+  for (j in seq_len(ncol(X_centered))) {
+    X_centered[, j] <- X_centered[, j] - median(X_centered[, j])
+  }
+  sigma_hat <- sqrt(median(X_centered^2) / qchisq(0.5, df = 1))
+  return(sigma_hat)
+}
+
+sig_business <- estimate_MED(X_business)
+sig_individual <- estimate_MED(X_individual)
+
+cat("Estimated sigma (business):", sig_business, "\n")
+cat("Estimated sigma (individual):", sig_individual, "\n")
+```
+
+
+
+```{r}
+# 4.3 Pairwise selective inference helper
+run_pairwise_inference <- function(X, pairs_df, k, sig, seed, iter.max = 30) {
+  out_list <- vector("list", nrow(pairs_df))
+  start_total <- Sys.time()
+
+  for (i in seq_len(nrow(pairs_df))) {
+    iter_start <- Sys.time()
+
+    c1 <- pairs_df$cluster_a[i]
+    c2 <- pairs_df$cluster_b[i]
+
+    cat("\n====================================\n")
+    cat("Running pair", i, "of", nrow(pairs_df), "\n")
+    cat("Clusters:", c1, "vs", c2, "\n")
+    cat("Start time:", as.character(iter_start), "\n")
+    flush.console()
+
+    inf_obj <- kmeans_inference(
+      X = X,
+      k = k,
+      cluster_1 = c1,
+      cluster_2 = c2,
+      sig = sig,
+      iter.max = iter.max,
+      seed = seed
+    )
+
+    inf_sum <- summary(inf_obj)
+
+    iter_end <- Sys.time()
+    iter_time <- as.numeric(difftime(iter_end, iter_start, units = "secs"))
+
+    cat("Finished pair", i, "\n")
+    cat("Time taken (seconds):", round(iter_time, 2), "\n")
+    flush.console()
+
+    out_list[[i]] <- data.frame(
+      cluster_a = c1,
+      cluster_b = c2,
+      cluster_a_name = pairs_df$cluster_a_name[i],
+      cluster_b_name = pairs_df$cluster_b_name[i],
+      centroid_distance = pairs_df$distance[i],
+      test_stat = inf_sum$test_stat,
+      p_selective = inf_sum$p_selective,
+      p_naive = inf_sum$p_naive,
+      time_sec = iter_time,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  total_time <- as.numeric(difftime(Sys.time(), start_total, units = "secs"))
+  cat("\n====================================\n")
+  cat("TOTAL TIME (seconds):", round(total_time, 2), "\n")
+  cat("====================================\n")
+
+  out <- do.call(rbind, out_list)
+  out <- out[order(out$p_selective, out$centroid_distance), ]
+  rownames(out) <- NULL
+  return(out)
+}
+```
+
+```{r}
+# 4.4 Run inference for both segments
+results_list <- list(
+  business = run_pairwise_inference(
+    X = X_business,
+    pairs_df = pairs_business,
+    k = k_business,
+    sig = sig_business,
+    seed = fixed_seed,
+    iter.max = iter_max_value
+  ),
+  individual = run_pairwise_inference(
+    X = X_individual,
+    pairs_df = pairs_individual,
+    k = k_individual,
+    sig = sig_individual,
+    seed = fixed_seed,
+    iter.max = iter_max_value
+  )
+)
+```
+
+```{r}
+# 4.5 Add significance flags
+results_list <- lapply(results_list, function(df) {
+  df %>%
+    dplyr::mutate(
+      selective_sig_05 = p_selective < 0.05,
+      naive_sig_05 = p_naive < 0.05
+    )
+})
+```
+
+```{r}
+# 4.6 Extract final result tables
+business_inference_results <- results_list$business
+individual_inference_results <- results_list$individual
+
+cat("Business selective inference results:\n")
+print(business_inference_results)
+
+cat("\nIndividual selective inference results:\n")
+print(individual_inference_results)
+```
+
+```{r}
+# 4.7 Save outputs
+write.csv(
+  business_inference_results,
+  "business_selective_inference_results.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  individual_inference_results,
+  "individual_selective_inference_results.csv",
+  row.names = FALSE
+)
+
+cat("Selective inference result files exported.\n")
+```
+```{r}
+write.csv(
+  business_analysis_df %>% dplyr::select(customer_id, cluster_raw, cluster_num),
+  "business_kmeans_estimation_labels.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  individual_analysis_df %>% dplyr::select(customer_id, cluster_raw, cluster_num),
+  "individual_kmeans_estimation_labels.csv",
+  row.names = FALSE
+)
+```
