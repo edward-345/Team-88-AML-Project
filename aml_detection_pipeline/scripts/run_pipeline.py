@@ -117,7 +117,7 @@ def main():
     print(f"Step 2: Found {len(score_files)} model score file(s). Fusing and generating explanations...")
     rule_df = pd.read_csv(rule_scores_path)
     rule_weight = fusion["rule_weight"]
-    partner_weight = fusion.get("partner_weight", 0.3)
+    anomaly_weight = fusion.get("anomaly_weight", 0.3)
     normalize_partner = fusion.get("normalize_partner_score", True)
     top_pct = pred.get("top_percentile", 5)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +140,7 @@ def main():
             partner_score = _normalize_01(partner_score)
         risk_score = (
             rule_weight * rule_df["rule_based_score"].values
-            + partner_weight * partner_score.values
+            + anomaly_weight * partner_score.values
         )
         risk_score = np.clip(risk_score, 0.0, 1.0)
         threshold = float(np.percentile(risk_score, 100 - top_pct))

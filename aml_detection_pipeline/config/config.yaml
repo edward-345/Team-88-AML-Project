@@ -34,7 +34,7 @@ rule_based:
 # --- Fusion (rule + one partner CSV) ---
 fusion:
   rule_weight: 0.70
-  partner_weight: 0.30
+  anomaly_weight: 0.30
   normalize_partner_score: true
 
 # --- Predictions ---
