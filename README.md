@@ -138,8 +138,8 @@ The scorer computes a 0–1 score per category from binary/flag features and wei
 
 ### 4. Fusion and predictions
 
-- **Config:** `fusion.rule_weight` (default 0.70), `fusion.partner_weight` (default 0.30), `fusion.normalize_partner_score` (default true), `predictions.top_percentile` (default 5).
-- **Process:** For each discovered `scores_<model>.csv`, the pipeline (a) min-max normalizes the ML score to [0, 1] when `normalize_partner_score` is true, (b) computes **fused_score = rule_weight × rule_based_score + partner_weight × normalized_ML_score**, (c) assigns **predicted_label = 1** to customers in the **top 5%** by fused score, and **predicted_label = 0** to the rest. The fused score is written as **risk_score** in the Task 2 output.
+- **Config:** `fusion.rule_weight` (default 0.70), `fusion.anomaly_weight` (default 0.30), `fusion.normalize_partner_score` (default true), `predictions.top_percentile` (default 5).
+- **Process:** For each discovered `scores_<model>.csv`, the pipeline (a) min-max normalizes the ML score to [0, 1] when `normalize_partner_score` is true, (b) computes **fused_score = rule_weight × rule_based_score + anomaly_weight × normalized_ML_score**, (c) assigns **predicted_label = 1** to customers in the **top 5%** by fused score, and **predicted_label = 0** to the rest. The fused score is written as **risk_score** in the Task 2 output.
 
 ---
 
